@@ -5,13 +5,15 @@ Modèle mathématique complet du capteur MPU6050
 import numpy as np
 from typing import Tuple, Optional
 from dataclasses import dataclass
+from scipy.signal import butter, lfilter, lfilter_zi
 
+from .trajectory import Trajectory
 from ..utils.constants import (
     GRAVITY, ACCEL_SCALE_FACTOR, GYRO_SCALE_FACTOR,
     ACCEL_NOISE_DENSITY_SI, GYRO_NOISE_DENSITY_RAD,
-    ACCEL_BIAS_STABILITY, GYRO_RRW,
-    TEMP_SENSITIVITY, TEMP_OFFSET,
-    TEMP_COEFF_GYRO, SAMPLE_RATE_HZ
+    ACCEL_BIAS_STABILITY, GYRO_RRW, GYRO_G_SENSITIVITY,
+    DLPF_CUTOFF_FREQ, DLPF_CUTOFF_FREQ_GYRO,
+    INTERNAL_SAMPLE_RATE_HZ, SAMPLE_RATE_HZ
 )
 
 
@@ -39,8 +41,6 @@ class SensorCalibration:
     m_a: np.ndarray = None
     # Désalignement du gyroscope (3,)
     m_g: np.ndarray = None
-    # Température de référence de calibration
-    T_ref: float = 25.0  # °C
 
     def __post_init__(self):
         if self.S_a is None:
@@ -57,6 +57,18 @@ class SensorCalibration:
             self.m_g = np.zeros(3)
 
 
+@dataclass
+class DynamicMeasurements:
+    """Résultat d'une simulation dynamique, à la cadence de sortie du capteur"""
+    time: np.ndarray             # (N,) instants d'échantillonnage [s]
+    accel: np.ndarray            # (N, 3) mesures de l'accéléromètre [m/s²]
+    gyro: np.ndarray             # (N, 3) mesures du gyroscope [rad/s]
+    accel_true: np.ndarray       # (N, 3) force spécifique vraie [m/s²]
+    gyro_true: np.ndarray        # (N, 3) vitesse angulaire vraie [rad/s]
+    quaternion_true: np.ndarray  # (N, 4) attitude vraie
+    euler_true: np.ndarray       # (N, 3) roll, pitch, yaw vrais [rad]
+
+
 class MPU6050Model:
     """
     Modèle mathématique complet du MPU6050
@@ -66,8 +78,9 @@ class MPU6050Model:
     - Matrices de sensibilité et non-orthogonalité
     - Biais déterministes et stochastiques
     - Bruits de mesure blanc gaussien
-    - Compensation thermique
     - G-sensibilité du gyroscope
+    - Réponse dynamique (simulate_dynamic_measurement) : filtre passe-bas
+      DLPF, décimation, saturation et quantification ADC
     """
 
     def __init__(self, config: MPU6050Config, calibration: Optional[SensorCalibration] = None):
@@ -146,21 +159,8 @@ class MPU6050Model:
         """
         return np.rad2deg(gyro) * self.gyro_scale
 
-    def temp_adc_to_celsius(self, adc_value: float) -> float:
-        """
-        Convertit la valeur ADC de température en °C
-
-        Args:
-            adc_value: Valeur ADC brute
-
-        Returns:
-            Température en °C
-        """
-        return (adc_value / TEMP_SENSITIVITY) + TEMP_OFFSET
-
     def measure_accel(self,
                      accel_true: np.ndarray,
-                     temperature: float = 25.0,
                      add_noise: bool = True) -> np.ndarray:
         """
         Simule la mesure de l'accéléromètre avec modèle complet
@@ -169,7 +169,6 @@ class MPU6050Model:
 
         Args:
             accel_true: Accélération vraie dans le repère capteur (3,) [m/s²]
-            temperature: Température du capteur [°C]
             add_noise: Ajouter le bruit de mesure
 
         Returns:
@@ -190,27 +189,21 @@ class MPU6050Model:
 
     def measure_gyro(self,
                     gyro_true: np.ndarray,
-                    temperature: float = 25.0,
                     accel: Optional[np.ndarray] = None,
                     add_noise: bool = True) -> np.ndarray:
         """
         Simule la mesure du gyroscope avec modèle complet
 
-        Équation: y_gyro = S_g · (ω_true + b_g(T) + n_g) + m_g + K_ga · a
+        Équation: y_gyro = S_g · (ω_true + b_g + n_g) + m_g + K_ga · a
 
         Args:
             gyro_true: Vitesse angulaire vraie dans le repère capteur (3,) [rad/s]
-            temperature: Température du capteur [°C]
-            accel: Accélération pour compensation g-sensitivity (3,) [m/s²]
+            accel: Force spécifique pour la g-sensibilité (3,) [m/s²]
             add_noise: Ajouter le bruit de mesure
 
         Returns:
             Mesure du gyroscope (3,) [rad/s]
         """
-        # Compensation thermique du biais
-        delta_T = temperature - self.calibration.T_ref
-        bias_temp = self.bias_g_current + TEMP_COEFF_GYRO * delta_T
-
         # Bruit de mesure blanc gaussien
         if add_noise:
             noise = np.random.normal(0, self.sigma_g_d, 3)
@@ -219,14 +212,13 @@ class MPU6050Model:
 
         # Application du modèle de base
         measurement = (self.calibration.S_g @
-                      (gyro_true + bias_temp + noise) +
+                      (gyro_true + self.bias_g_current + noise) +
                       self.calibration.m_g)
 
         # G-sensibilité (effet des accélérations linéaires)
         if accel is not None:
-            # Modèle simplifié: effet proportionnel sur chaque axe
-            g_effect = 0.002 * accel / GRAVITY  # ~0.2 (°/s)/g converted
-            measurement += g_effect
+            # Modèle simplifié: effet proportionnel sur chaque axe, 0.2 (°/s)/g
+            measurement += GYRO_G_SENSITIVITY * accel / GRAVITY
 
         return measurement
 
@@ -284,39 +276,30 @@ class MPU6050Model:
         corrected -= self.bias_a_current
         return corrected
 
-    def correct_measurement_gyro(self,
-                                measurement: np.ndarray,
-                                temperature: float = 25.0) -> np.ndarray:
+    def correct_measurement_gyro(self, measurement: np.ndarray) -> np.ndarray:
         """
-        Corrige la mesure du gyroscope (calibration inverse avec température)
+        Corrige la mesure du gyroscope (calibration inverse)
 
         Args:
             measurement: Mesure brute (3,) [rad/s]
-            temperature: Température du capteur [°C]
 
         Returns:
             Vitesse angulaire corrigée (3,) [rad/s]
         """
-        # Compensation thermique du biais
-        delta_T = temperature - self.calibration.T_ref
-        bias_temp = self.bias_g_current + TEMP_COEFF_GYRO * delta_T
-
-        # Inverse du modèle: ω_true = S_g^(-1) · (y_gyro - m_g) - b_g(T)
+        # Inverse du modèle: ω_true = S_g^(-1) · (y_gyro - m_g) - b_g
         corrected = np.linalg.inv(self.calibration.S_g) @ (measurement - self.calibration.m_g)
-        corrected -= bias_temp
+        corrected -= self.bias_g_current
         return corrected
 
     def simulate_static_measurement(self,
                                    gravity_direction: np.ndarray,
-                                   duration: float,
-                                   temperature: float = 25.0) -> Tuple[np.ndarray, np.ndarray]:
+                                   duration: float) -> Tuple[np.ndarray, np.ndarray]:
         """
         Simule des mesures statiques (pas de mouvement, seulement gravité)
 
         Args:
             gravity_direction: Direction de la gravité dans le repère capteur (3,) [unitaire]
             duration: Durée de la simulation [s]
-            temperature: Température [°C]
 
         Returns:
             Tuple (accel_measurements, gyro_measurements)
@@ -336,13 +319,138 @@ class MPU6050Model:
 
         for i in range(n_samples):
             # Mesures avec bruit et biais évoluant
-            accel_measurements[i] = self.measure_accel(accel_true, temperature)
-            gyro_measurements[i] = self.measure_gyro(gyro_true, temperature, accel_true)
+            accel_measurements[i] = self.measure_accel(accel_true)
+            gyro_measurements[i] = self.measure_gyro(gyro_true, accel_true)
 
             # Mise à jour du biais (random walk)
             self.update_bias_random_walk()
 
         return accel_measurements, gyro_measurements
+
+    def simulate_dynamic_measurement(self,
+                                    trajectory: Trajectory,
+                                    duration: float,
+                                    add_noise: bool = True,
+                                    quantize: bool = True) -> DynamicMeasurements:
+        """
+        Simule les mesures du capteur en mouvement le long d'une trajectoire
+
+        Chaîne de mesure (docs/MATHEMATICAL_MODELS.md, §5.7) :
+          1. ω_S(t) et f_S(t) vrais calculés à la cadence interne (1 kHz)
+          2. Modèle d'erreurs : y = S·(x + b + n) + m, plus la g-sensibilité
+             du gyroscope (b suit une marche aléatoire)
+          3. Filtre passe-bas DLPF (Butterworth d'ordre 2, fréquence de
+             coupure selon config.dlpf_cfg) à la cadence interne
+          4. Décimation à config.sample_rate = 1 kHz / (1 + SMPLRT_DIV)
+          5. Saturation à la pleine échelle et quantification ADC 16 bits
+
+        Args:
+            trajectory: Trajectoire du capteur (attitude + position)
+            duration: Durée de la simulation [s]
+            add_noise: Ajouter le bruit blanc et la marche aléatoire des biais
+            quantize: Arrondir les mesures au LSB de l'ADC
+
+        Returns:
+            DynamicMeasurements (mesures et grandeurs vraies aux instants de sortie)
+        """
+        fs_int = float(INTERNAL_SAMPLE_RATE_HZ)
+        decimation = fs_int / self.config.sample_rate
+        if decimation < 1 or abs(decimation - round(decimation)) > 1e-9:
+            raise ValueError(
+                f"sample_rate = {self.config.sample_rate} Hz invalide : la cadence de "
+                f"sortie doit valoir {fs_int:.0f} Hz / (1 + SMPLRT_DIV)")
+        decimation = int(round(decimation))
+        if self.config.dlpf_cfg not in DLPF_CUTOFF_FREQ:
+            raise ValueError(f"dlpf_cfg = {self.config.dlpf_cfg} invalide (0 à 6)")
+
+        n_out = int(round(duration * self.config.sample_rate))
+        if n_out < 1:
+            raise ValueError("duration doit couvrir au moins une période d'échantillonnage")
+        n_int = n_out * decimation
+        t_int = np.arange(n_int) / fs_int
+
+        # 1. Grandeurs vraies à la cadence interne
+        f_true = trajectory.specific_force(t_int)
+        w_true = trajectory.angular_velocity(t_int)
+
+        # 2. Modèle d'erreurs
+        if add_noise:
+            n_a = np.random.normal(0, ACCEL_NOISE_DENSITY_SI * np.sqrt(fs_int), (n_int, 3))
+            n_g = np.random.normal(0, GYRO_NOISE_DENSITY_RAD * np.sqrt(fs_int), (n_int, 3))
+            w_a = np.random.normal(0, ACCEL_BIAS_STABILITY / np.sqrt(fs_int), (n_int, 3))
+            w_g = np.random.normal(0, GYRO_RRW / np.sqrt(fs_int), (n_int, 3))
+        else:
+            n_a = n_g = w_a = w_g = np.zeros((n_int, 3))
+
+        # Biais en marche aléatoire, partant de l'état courant
+        b_a = self.bias_a_current + np.cumsum(w_a, axis=0) - w_a
+        b_g = self.bias_g_current + np.cumsum(w_g, axis=0) - w_g
+        self.bias_a_current = self.bias_a_current + w_a.sum(axis=0)
+        self.bias_g_current = self.bias_g_current + w_g.sum(axis=0)
+
+        cal = self.calibration
+        raw_a = (f_true + b_a + n_a) @ cal.S_a.T + cal.m_a
+        raw_g = ((w_true + b_g + n_g) @ cal.S_g.T + cal.m_g +
+                 GYRO_G_SENSITIVITY * f_true / GRAVITY)
+
+        # 3. Filtre passe-bas numérique (DLPF)
+        filt_a = self._dlpf(raw_a, DLPF_CUTOFF_FREQ[self.config.dlpf_cfg], fs_int)
+        filt_g = self._dlpf(raw_g, DLPF_CUTOFF_FREQ_GYRO[self.config.dlpf_cfg], fs_int)
+
+        # 4. Décimation : la sortie k lit le dernier échantillon interne à t_k
+        idx = np.arange(n_out) * decimation
+        accel = filt_a[idx]
+        gyro = filt_g[idx]
+
+        # 5. Saturation et quantification ADC
+        accel = self.adc_to_accel(self._adc(self.accel_to_adc(accel), quantize))
+        gyro = self.adc_to_gyro(self._adc(self.gyro_to_adc(gyro), quantize))
+
+        t_out = t_int[idx]
+        return DynamicMeasurements(
+            time=t_out,
+            accel=accel,
+            gyro=gyro,
+            accel_true=f_true[idx],
+            gyro_true=w_true[idx],
+            quaternion_true=trajectory.quaternion(t_out),
+            euler_true=trajectory.euler(t_out)
+        )
+
+    @staticmethod
+    def _dlpf(x: np.ndarray, cutoff: float, fs: float) -> np.ndarray:
+        """
+        Filtre passe-bas Butterworth d'ordre 2 (modèle du DLPF), appliqué
+        colonne par colonne, initialisé en régime permanent sur x[0]
+
+        Args:
+            x: Signal (N, 3)
+            cutoff: Fréquence de coupure -3 dB [Hz]
+            fs: Cadence du signal [Hz]
+
+        Returns:
+            Signal filtré (N, 3)
+        """
+        b, a = butter(2, cutoff, fs=fs)
+        zi = lfilter_zi(b, a)[:, None] * x[0][None, :]
+        y, _ = lfilter(b, a, x, axis=0, zi=zi)
+        return y
+
+    @staticmethod
+    def _adc(counts: np.ndarray, quantize: bool) -> np.ndarray:
+        """
+        Saturation (et arrondi) d'une valeur exprimée en LSB, ADC 16 bits signé
+
+        Args:
+            counts: Valeur en LSB (non arrondie)
+            quantize: Arrondir au LSB
+
+        Returns:
+            Valeur en LSB dans [-32768, 32767]
+        """
+        if quantize:
+            counts = np.round(counts)
+        return np.clip(counts, -32768, 32767)
 
 
 def create_scale_matrix_with_errors(scale_error_percent: float = 0.0,

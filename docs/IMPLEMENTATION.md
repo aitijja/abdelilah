@@ -29,16 +29,22 @@ pip install numpy scipy matplotlib
 abdelilah/
 ├── src/
 │   ├── models/
-│   │   └── mpu6050_model.py
+│   │   ├── mpu6050_model.py      # Modèle de mesure + chaîne dynamique (DLPF, ADC)
+│   │   └── trajectory.py         # Trajectoires 6 DDL (Signal, Trajectory)
 │   ├── fusion/
 │   │   ├── kalman_filter.py
 │   │   ├── complementary_filter.py
-│   │   └── mahony_filter.py
+│   │   ├── mahony_filter.py
+│   │   └── madgwick_filter.py
 │   └── utils/
 │       └── constants.py
 ├── examples/
 │   ├── basic_simulation.py
-│   └── calibration_example.py
+│   ├── calibration_example.py
+│   └── dynamic_simulation.py
+├── tests/
+├── matlab/
+├── arduino/
 └── docs/
     ├── MATHEMATICAL_MODELS.md
     ├── SENSOR_FUSION.md
@@ -83,8 +89,8 @@ accel_true = np.array([0, 0, 9.81])  # Statique, +Z up
 omega_true = np.deg2rad([0, 0, 10])  # 10°/s autour de Z
 
 # Simuler les mesures
-accel_meas = sensor.measure_accel(accel_true, temperature=25.0, add_noise=True)
-gyro_meas = sensor.measure_gyro(omega_true, temperature=25.0, add_noise=True)
+accel_meas = sensor.measure_accel(accel_true, add_noise=True)
+gyro_meas = sensor.measure_gyro(omega_true, accel=accel_true, add_noise=True)
 
 print(f"Accéléromètre: {accel_meas}")
 print(f"Gyroscope: {np.rad2deg(gyro_meas)} °/s")
@@ -95,7 +101,7 @@ print(f"Gyroscope: {np.rad2deg(gyro_meas)} °/s")
 ```python
 # Corriger avec les paramètres de calibration
 accel_corrected = sensor.correct_measurement_accel(accel_meas)
-gyro_corrected = sensor.correct_measurement_gyro(gyro_meas, temperature=25.0)
+gyro_corrected = sensor.correct_measurement_gyro(gyro_meas)
 
 print(f"Accéléromètre corrigé: {accel_corrected}")
 print(f"Gyroscope corrigé: {np.rad2deg(gyro_corrected)} °/s")
@@ -140,6 +146,8 @@ config_moderate = MPU6050Config(dlpf_cfg=3)
 config_smooth = MPU6050Config(dlpf_cfg=6)
 ```
 
+Le DLPF est appliqué par `simulate_dynamic_measurement` (voir [Simulation de trajectoire dynamique](#simulation-de-trajectoire-dynamique)) ; les méthodes `measure_accel` et `measure_gyro` donnent la mesure à un instant, sans filtrage.
+
 ### Fréquence d'échantillonnage
 
 ```python
@@ -152,6 +160,8 @@ config_standard = MPU6050Config(sample_rate=100.0)
 # Basse fréquence pour économie d'énergie
 config_slow = MPU6050Config(sample_rate=10.0)
 ```
+
+Pour `simulate_dynamic_measurement`, la fréquence doit valoir 1 kHz / (1 + SMPLRT_DIV) : 1000, 500, 250, 200, 100 Hz…
 
 ---
 
@@ -307,49 +317,38 @@ while True:
 
 ### Simulation de trajectoire dynamique
 
+Une `Trajectory` décrit l'attitude (roll, pitch, yaw) et la position du capteur ; chaque composante est un `Signal` analytique `s₀ + ṡ₀·t + Σ A·sin(2πft + φ)`. `simulate_dynamic_measurement` en déduit les grandeurs vraies puis applique toute la chaîne de mesure (DLPF, décimation, saturation, quantification). Détails : `docs/MATHEMATICAL_MODELS.md`, §5.6 à §5.8.
+
 ```python
 import numpy as np
-from src.models.mpu6050_model import MPU6050Model, MPU6050Config
-from src.fusion.kalman_filter import QuaternionEKF
+from src.models import MPU6050Model, MPU6050Config, Signal, Trajectory
+from src.fusion import MahonyFilter
 
-# Configuration
-config = MPU6050Config(sample_rate=200.0)
+# Trajectoire : oscillations d'attitude, lacet continu, déplacement horizontal
+traj = Trajectory(
+    roll=Signal(sines=[(np.deg2rad(15), 0.5, 0.0)]),    # ±15° à 0.5 Hz
+    pitch=Signal(sines=[(np.deg2rad(10), 0.3, 0.5)]),   # ±10° à 0.3 Hz
+    yaw=Signal(rate=np.deg2rad(20)),                     # 20 °/s
+    x=Signal(sines=[(0.5, 0.25, 0.0)])                   # ±0.5 m à 0.25 Hz
+)
+
+# Capteur : 250 Hz (SMPLRT_DIV = 3), DLPF 44 Hz, ±4 g, ±500 °/s
+config = MPU6050Config(accel_range=4, gyro_range=500, sample_rate=250.0, dlpf_cfg=3)
 sensor = MPU6050Model(config)
-ekf = QuaternionEKF(sample_rate=200.0)
+data = sensor.simulate_dynamic_measurement(traj, duration=30.0)
 
-# Générer une trajectoire de rotation
-duration = 10.0
-n_samples = int(duration * config.sample_rate)
-dt = 1.0 / config.sample_rate
+# Fusion et comparaison à la vérité terrain
+mahony = MahonyFilter(kp=2.0, ki=0.1, sample_rate=config.sample_rate)
+errors = []
+for k in range(len(data.time)):
+    mahony.update(data.gyro[k], data.accel[k])
+    roll, pitch, _ = mahony.euler_angles
+    errors.append([roll, pitch] - data.euler_true[k, :2])
 
-# Rotation sinusoïdale
-freq = 0.5  # Hz
-omega_amplitude = np.deg2rad(45)  # 45°/s
-
-for i in range(n_samples):
-    t = i * dt
-
-    # Vitesse angulaire vraie
-    omega_true = np.array([
-        omega_amplitude * np.sin(2*np.pi*freq*t),
-        omega_amplitude * np.cos(2*np.pi*freq*t),
-        0
-    ])
-
-    # Calculer l'orientation vraie (intégration)
-    # ... (omis pour brièveté)
-
-    # Simuler les mesures
-    accel_meas = sensor.measure_accel(accel_true)
-    gyro_meas = sensor.measure_gyro(omega_true)
-
-    # Fusion
-    ekf.predict(gyro_meas)
-    ekf.update(accel_meas)
-
-    # Analyser les résultats
-    roll, pitch, yaw = ekf.euler_angles
+print("RMSE roll/pitch [°]:", np.rad2deg(np.sqrt(np.mean(np.square(errors), axis=0))))
 ```
+
+Exemple complet (4 filtres, vibrations moteur) : `examples/dynamic_simulation.py`.
 
 ### Détection et gestion du mouvement dynamique
 
@@ -370,25 +369,6 @@ else:
     # Utiliser uniquement le gyroscope
     filter.predict(gyro)
     # Ne pas faire de update()
-```
-
-### Compensation thermique en temps réel
-
-```python
-# Charger les coefficients de calibration thermique
-thermal_coeffs = load_thermal_calibration()
-
-# Dans la boucle
-temperature = read_temperature()
-gyro_raw = read_gyro()
-
-# Compenser le biais thermique
-delta_T = temperature - thermal_coeffs['T_ref']
-b_g_thermal = (thermal_coeffs['b0'] +
-               thermal_coeffs['b1'] * delta_T +
-               thermal_coeffs['b2'] * delta_T**2)
-
-gyro_compensated = gyro_raw - b_g_thermal
 ```
 
 ### Matrice de rotation pour transformation de coordonnées

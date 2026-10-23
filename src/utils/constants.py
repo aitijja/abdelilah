@@ -41,10 +41,6 @@ GYRO_RESOLUTION = {
     2000: 0.06098
 }
 
-# Conversion température
-TEMP_SENSITIVITY = 340.0  # LSB/°C
-TEMP_OFFSET = 36.53       # °C
-
 # Paramètres de bruit de l'accéléromètre
 ACCEL_NOISE_DENSITY = 400e-6 * GRAVITY  # 400 µg/√Hz en m/s²/√Hz
 ACCEL_NOISE_DENSITY_SI = 3.924e-3       # m/s²/√Hz
@@ -72,29 +68,38 @@ GYRO_ARW = np.deg2rad(GYRO_ARW_DEG)     # rad/√s
 GYRO_RRW_DEG = 0.001                    # °/s/√s
 GYRO_RRW = np.deg2rad(GYRO_RRW_DEG)     # rad/s/√s
 
-# Paramètres de température
-TEMP_RANGE = (-40, 85)                  # °C (operating range)
-TEMP_COEFF_GYRO_DPS = 0.03              # °/s/°C (bias temperature coefficient)
-TEMP_COEFF_GYRO = np.deg2rad(TEMP_COEFF_GYRO_DPS)  # rad/s/°C
-
 # Erreurs d'échelle et de non-orthogonalité
 SCALE_ERROR_PERCENT = 2.0               # ±2% typical
 CROSS_AXIS_SENSITIVITY_PERCENT = 2.0    # ±2% typical
 
 # Sensibilité du gyroscope aux accélérations (g-sensitivity)
 GYRO_G_SENSITIVITY_DPS_G = 0.2          # (°/s)/g
-GYRO_G_SENSITIVITY = np.deg2rad(GYRO_G_SENSITIVITY_DPS_G)  # (rad/s)/(m/s²)
+GYRO_G_SENSITIVITY = np.deg2rad(GYRO_G_SENSITIVITY_DPS_G)  # (rad/s)/g
 
-# Fréquences de coupure du filtre passe-bas (DLPF - Digital Low Pass Filter)
-DLPF_CUTOFF_FREQ = {
-    0: 260,    # Hz (Accel: 260Hz, Gyro: 256Hz)
-    1: 184,    # Hz (Accel: 184Hz, Gyro: 188Hz)
-    2: 94,     # Hz (Accel: 94Hz, Gyro: 98Hz)
-    3: 44,     # Hz (Accel: 44Hz, Gyro: 42Hz)
-    4: 21,     # Hz (Accel: 21Hz, Gyro: 20Hz)
-    5: 10,     # Hz (Accel: 10Hz, Gyro: 10Hz)
-    6: 5       # Hz (Accel: 5Hz, Gyro: 5Hz)
+# Fréquences de coupure (-3 dB) du filtre passe-bas (DLPF - Digital Low Pass Filter)
+# selon DLPF_CFG (registre CONFIG 0x1A, Register Map rev 4.2)
+DLPF_CUTOFF_FREQ = {        # Accéléromètre
+    0: 260,    # Hz (retard annoncé 0 ms)
+    1: 184,    # Hz (2.0 ms)
+    2: 94,     # Hz (3.0 ms)
+    3: 44,     # Hz (4.9 ms)
+    4: 21,     # Hz (8.5 ms)
+    5: 10,     # Hz (13.8 ms)
+    6: 5       # Hz (19.0 ms)
 }
+DLPF_CUTOFF_FREQ_GYRO = {   # Gyroscope
+    0: 256,    # Hz (retard annoncé 0.98 ms)
+    1: 188,    # Hz (1.9 ms)
+    2: 98,     # Hz (2.8 ms)
+    3: 42,     # Hz (4.8 ms)
+    4: 20,     # Hz (8.3 ms)
+    5: 10,     # Hz (13.4 ms)
+    6: 5       # Hz (18.6 ms)
+}
+
+# Cadence interne des convertisseurs (DLPF actif) :
+# f_sortie = INTERNAL_SAMPLE_RATE_HZ / (1 + SMPLRT_DIV)
+INTERNAL_SAMPLE_RATE_HZ = 1000          # Hz
 
 # Fréquences d'échantillonnage typiques
 SAMPLE_RATE_HZ = 1000                   # Hz (typical for sensor fusion)

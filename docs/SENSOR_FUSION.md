@@ -549,7 +549,28 @@ où **b** est le champ magnétique de référence et **m̃** la mesure normalis�
 ATmega328P (≈13 Ko de flash) et lit le MPU6050 directement via `Wire`.
 
 Résultats en simulation (`examples/basic_simulation.py`, rampe de 45° en pitch
-sur 5 s à 100 Hz) : RMSE pitch de 0.03 à 0.13° pour les quatre filtres.
+sur 5 s à 100 Hz) : RMSE pitch de 0.03 à 0.15° pour les quatre filtres.
+
+**En mouvement** (`examples/dynamic_simulation.py`, 250 Hz, DLPF 44 Hz, mêmes
+réglages que ci-dessus, RMSE roll après 2 s de convergence) :
+
+| Scénario | EKF | Complémentaire | Mahony | Madgwick |
+|----------|-----|----------------|--------|----------|
+| Rotation seule (±15°, lacet 20 °/s) | 0.15° | 0.19° | 0.14° | 0.12° |
+| Rotation + accélérations linéaires (jusqu'à 0.2 g) | 14.5° | 4.6° | 3.7° | 4.0° |
+
+Les accélérations linéaires faussent la direction de gravité vue par
+l'accéléromètre : les filtres complémentaire, Mahony et Madgwick perdent un
+facteur 25 à 30. L'EKF, dont la matrice R ne représente que le bruit du capteur,
+attribue ces accélérations au biais du gyroscope (biais estimé jusqu'à 388 °/s)
+et diverge. Multiplier R par 100 ramène l'erreur à 3.5° mais le biais dérive
+encore (74 °/s) ; sans estimation du biais, l'EKF descend à 0.6–1.2°. Une
+correction de fond (EKF à état d'erreur, R adaptatif) reste à faire.
+
+Vibrations moteur à 150 Hz (0.5 g) : avec DLPF_CFG = 0 (260 Hz), le résidu
+vibratoire atteint 0.34 g et 80 % des mesures de l'accéléromètre sont rejetées
+par la détection de mouvement ; avec DLPF_CFG = 3 (44 Hz), il tombe à 0.03 g et
+toutes les mesures sont utilisées.
 
 ---
 

@@ -8,8 +8,7 @@
 4. [Modélisation du bruit](#modélisation-du-bruit)
 5. [Modélisation du biais](#modélisation-du-biais)
 6. [Modélisation dynamique](#modélisation-dynamique)
-7. [Compensation thermique](#compensation-thermique)
-8. [Références](#références)
+7. [Références](#références)
 
 ---
 
@@ -18,7 +17,8 @@
 Le MPU6050 est une unité de mesure inertielle (IMU) à 6 degrés de liberté intégrant:
 - Un accéléromètre MEMS 3 axes
 - Un gyroscope MEMS 3 axes
-- Un capteur de température
+
+Il intègre aussi un capteur de température, qui n'est pas modélisé ici : les effets thermiques sont hors du périmètre de ce document.
 
 Ce document présente les modèles mathématiques rigoureux de ces capteurs pour applications en fusion de capteurs et estimation d'état.
 
@@ -181,7 +181,7 @@ Le gyroscope est affecté par les accélérations linéaires:
 ω_measured = ω_true + K_ga · a_S
 ```
 
-où **K_ga** ∈ ℝ³ˣ³ est la matrice de g-sensibilité (typiquement diagonale avec valeurs ~0.002 (°/s)/g).
+où **K_ga** ∈ ℝ³ˣ³ est la matrice de g-sensibilité. Le modèle la prend diagonale, égale à 0.2 (°/s)/g sur chaque axe (`GYRO_G_SENSITIVITY_DPS_G` dans `src/utils/constants.py`).
 
 ---
 
@@ -282,7 +282,6 @@ w_a[k] ~ N(0, σ_wa² · Δt · I₃)
 ```
 
 **Stabilité du biais:**
-- Stabilité sur température: ±50 mg typique
 - Répétabilité power-on à power-on: ±40 mg typique
 - Dérive à long terme: négligeable pour applications courtes
 
@@ -307,7 +306,6 @@ w_g[k] ~ N(0, σ_wg² · Δt · I₃)
 - Biais initial: ±20 °/s
 - Instabilité du biais (bias instability): ~0.01 °/s (Allan variance minimum)
 - Dérive angulaire (angle random walk - ARW): ~0.1 °/√s
-- Sensibilité thermique: ~0.03 °/s/°C
 
 ### 4.3 Variance Allan et caractérisation du biais
 
@@ -333,19 +331,6 @@ Pour le gyroscope:
 σ_g² = N²/τ₀
 σ_wg² = K²
 ```
-
-### 4.4 Modèle de biais dépendant de la température
-
-Le biais varie avec la température T:
-
-```
-b_g(T) = b_g0 + k_T · (T - T_0) + b_g_drift(t)
-```
-
-où:
-- b_g0 : biais à température de référence T_0
-- k_T : coefficient thermique (~0.03 °/s/°C)
-- b_g_drift(t) : dérive résiduelle (random walk)
 
 ---
 
@@ -387,6 +372,8 @@ a_W = d²p/dt² + g_W
 a_S = R_WS^T · (d²p/dt² + g_W)
 ```
 
+où g_W = [0, 0, g]ᵀ (axe z du repère monde vers le haut) : au repos et à plat, a_S = [0, 0, g]ᵀ.
+
 **Système d'état complet (9 DDL - position, vitesse, accélération):**
 
 ```
@@ -406,10 +393,10 @@ où:
 
 ### 5.3 Modèle d'état complet pour filtre de Kalman
 
-**Vecteur d'état (15 DDL):**
+**Vecteur d'état (13 composantes):**
 
 ```
-x = [ p ]   ∈ ℝ¹⁵
+x = [ p ]   ∈ ℝ¹³
     [ v ]
     [ q ]
     [b_g]
@@ -490,62 +477,114 @@ Pour le quaternion, normalisation après chaque intégration:
 q[k+1] = q[k+1] / ||q[k+1]||
 ```
 
----
+### 5.6 Trajectoire et grandeurs vraies
 
-## Compensation thermique
-
-### 6.1 Mesure de température
-
-Le MPU6050 intègre un capteur de température:
+Pour simuler le capteur en mouvement, on se donne l'attitude (angles d'Euler ZYX φ, θ, ψ) et la position **p_W** en fonction du temps. Chaque composante est un signal analytique :
 
 ```
-T [°C] = (ADC_temp / 340) + 36.53
+s(t) = s₀ + ṡ₀·t + Σᵢ Aᵢ·sin(2π·fᵢ·t + φᵢ)
 ```
 
-### 6.2 Compensation du biais du gyroscope
+dont les dérivées ṡ et s̈ sont exactes (aucune différentiation numérique).
 
-**Modèle polynomial:**
-
-```
-b_g(T) = b₀ + b₁·T + b₂·T²
-```
-
-Les coefficients [b₀, b₁, b₂] sont déterminés par calibration sur plage de température.
-
-**Modèle linéaire simplifié:**
+**Attitude:**
 
 ```
-b_g(T) = b_ref + k_T · (T - T_ref)
+R_WS = R_z(ψ) · R_y(θ) · R_x(φ)
+q    = q_z(ψ) ⊗ q_y(θ) ⊗ q_x(φ)
 ```
 
-où k_T ≈ 0.03 °/s/°C.
-
-### 6.3 Compensation du facteur d'échelle
-
-Le facteur d'échelle varie également avec la température:
+**Vitesse angulaire dans le repère capteur** (cinématique des angles d'Euler ZYX):
 
 ```
-S(T) = S_ref · [1 + α_T · (T - T_ref)]
+ω_x = φ̇ − ψ̇·sin θ
+ω_y = θ̇·cos φ + ψ̇·sin φ·cos θ
+ω_z = −θ̇·sin φ + ψ̇·cos φ·cos θ
 ```
 
-où α_T est le coefficient thermique du facteur d'échelle (typiquement ±0.02%/°C).
+**Force spécifique** (mesure d'un accéléromètre idéal, §5.2):
 
-### 6.4 Algorithme de compensation en temps réel
+```
+f_S = R_WSᵀ · (p̈_W + g·e_z)
+```
+
+Toute accélération linéaire p̈_W ≠ 0 s'ajoute à la gravité : c'est la principale source d'erreur des filtres qui corrigent l'inclinaison avec l'accéléromètre.
+
+**Vérification:** intégrer dq/dt = ½·Ω(ω_S)·q (§5.1) redonne q(t) à 1e-9 près, et f_S coïncide avec R(q)ᵀ·(p̈_W + g·e_z) calculé depuis le quaternion (`tests/test_dynamics.py`).
+
+### 5.7 Réponse dynamique du capteur
+
+Le MPU6050 ne délivre pas directement ω_S et f_S : la chaîne de mesure filtre, échantillonne et numérise.
+
+```
+ω_S, f_S ──► erreurs ──► DLPF ──► décimation ──► saturation + ADC 16 bits ──► y[k]
+            (1 kHz)     (1 kHz)  (÷ 1+SMPLRT_DIV)
+```
+
+**1. Modèle d'erreurs** à la cadence interne f_int = 1 kHz (§1 à §4):
+
+```
+y_acc  = S_a · (f_S + b_a + n_a) + m_a
+y_gyro = S_g · (ω_S + b_g + n_g) + m_g + k_ga · f_S / g
+```
+
+avec n ~ N(0, σ²·f_int) (σ : densité spectrale de bruit), b en marche aléatoire (§4) et k_ga = 0.2 (°/s)/g la g-sensibilité du gyroscope.
+
+**2. Filtre passe-bas numérique (DLPF)**, modélisé par un Butterworth d'ordre 2 à la fréquence de coupure −3 dB du registre CONFIG (DLPF_CFG):
+
+```
+H(s) = ω_c² / (s² + √2·ω_c·s + ω_c²),     ω_c = 2π·f_c
+```
+
+discrétisé par transformation bilinéaire (avec pré-distorsion) à f_int. Après filtrage, l'écart-type du bruit vaut σ·√(2·B_eq) avec B_eq ≈ 1.11·f_c.
+
+| DLPF_CFG | f_c accel / gyro [Hz] | Retard datasheet [ms] | Retard du modèle [ms] |
+|----------|-----------------------|-----------------------|-----------------------|
+| 0 | 260 / 256 | 0 / 0.98 | 0.7 / 0.7 |
+| 1 | 184 / 188 | 2.0 / 1.9 | 1.1 / 1.1 |
+| 2 | 94 / 98 | 3.0 / 2.8 | 2.3 / 2.2 |
+| 3 | 44 / 42 | 4.9 / 4.8 | 5.1 / 5.3 |
+| 4 | 21 / 20 | 8.5 / 8.3 | 10.7 / 11.3 |
+| 5 | 10 / 10 | 13.8 / 13.4 | 22.7 / 22.7 |
+| 6 | 5 / 5 | 19.0 / 18.6 | 46.7 / 46.7 |
+
+La bande passante est exacte. Le retard du modèle (temps de groupe à basse fréquence) est proche du datasheet jusqu'à DLPF_CFG = 3 et surestimé au-delà : la structure exacte du filtre interne n'est pas documentée par le constructeur. Avec DLPF_CFG = 0, le gyroscope réel échantillonne à 8 kHz ; le modèle garde 1 kHz pour les deux capteurs.
+
+**3. Décimation:**
+
+```
+f_s = 1 kHz / (1 + SMPLRT_DIV),     y[k] = y_DLPF(t_k),  t_k = k / f_s
+```
+
+Une composante au-delà de f_s/2 que le DLPF n'atténue pas se replie dans la bande utile : une vibration moteur à 150 Hz échantillonnée à 250 Hz apparaît à 100 Hz.
+
+**4. Saturation et quantification:**
+
+```
+y_LSB = clip(round(y · S_LSB), −32768, 32767)
+```
+
+où S_LSB est la sensibilité de la plage choisie (16384 LSB/g à ±2 g, 131 LSB/(°/s) à ±250 °/s). Au-delà de la pleine échelle, la mesure est écrêtée.
+
+### 5.8 Simulation
 
 ```python
-# Pseudo-code
-T_current = read_temperature()
-ΔT = T_current - T_calibration
+import numpy as np
+from src.models import MPU6050Model, MPU6050Config, Signal, Trajectory
 
-# Compensation du biais
-b_g_compensated = b_g_calibrated + k_T * ΔT
+traj = Trajectory(
+    roll=Signal(sines=[(np.deg2rad(15), 0.5, 0.0)]),   # ±15° à 0.5 Hz
+    yaw=Signal(rate=np.deg2rad(20)),                    # 20 °/s en lacet
+    x=Signal(sines=[(0.5, 0.25, 0.0)])                  # ±0.5 m à 0.25 Hz
+)
+sensor = MPU6050Model(MPU6050Config(sample_rate=250, dlpf_cfg=3))
+data = sensor.simulate_dynamic_measurement(traj, duration=30.0)
 
-# Compensation du facteur d'échelle
-S_g_compensated = S_g_calibrated * (1 + α_T * ΔT)
-
-# Application
-ω_corrected = S_g_compensated^(-1) * (y_gyro - b_g_compensated)
+# data.accel, data.gyro          : mesures à 250 Hz
+# data.euler_true, data.gyro_true : vérité terrain aux mêmes instants
 ```
+
+`examples/dynamic_simulation.py` compare les filtres de fusion en mouvement et l'effet du DLPF sur les vibrations (résultats dans `docs/SENSOR_FUSION.md`, §5.5).
 
 ---
 
@@ -569,7 +608,6 @@ S_g_compensated = S_g_calibrated * (1 + α_T * ΔT)
 | Biais initial | b_g0 | ±20 | °/s |
 | Instabilité du biais | B | 0.01 | °/s |
 | ARW | K | 0.1 | °/√s |
-| Coeff. thermique | k_T | 0.03 | °/s/°C |
 | Erreur d'échelle | ε_s | ±2 | % |
 
 ---

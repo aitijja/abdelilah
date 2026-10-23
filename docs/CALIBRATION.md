@@ -5,8 +5,7 @@
 1. [Introduction](#introduction)
 2. [Calibration de l'accéléromètre](#calibration-de-laccéléromètre)
 3. [Calibration du gyroscope](#calibration-du-gyroscope)
-4. [Compensation thermique](#compensation-thermique)
-5. [Validation de la calibration](#validation-de-la-calibration)
+4. [Validation de la calibration](#validation-de-la-calibration)
 
 ---
 
@@ -17,7 +16,6 @@ La calibration du MPU6050 est essentielle pour obtenir des mesures précises. Le
 1. **Biais (offset)**: Décalage constant de la mesure
 2. **Erreur d'échelle**: Gain incorrect du capteur
 3. **Non-orthogonalité**: Désalignement des axes
-4. **Dépendance thermique**: Variation avec la température
 
 ---
 
@@ -166,7 +164,7 @@ En position statique, le gyroscope doit mesurer zéro. Le biais est la moyenne d
 
 ```python
 # 1. Placer le capteur immobile sur surface stable
-# 2. Attendre la stabilisation thermique (5-10 minutes)
+# 2. Attendre la stabilisation après la mise sous tension (5-10 minutes)
 # 3. Enregistrer N échantillons (ex: N=5000 pour 50s à 100Hz)
 omega_samples = [omega_1, omega_2, ..., omega_N]
 
@@ -290,60 +288,9 @@ Plot log-log de σ_Allan(τ) vs τ:
 
 ---
 
-## Compensation thermique
-
-### 3.1 Caractérisation thermique
-
-**Procédure:**
-
-```python
-# 1. Placer le capteur dans une chambre thermique
-# 2. Pour chaque température T ∈ [T_min, T_max]:
-#    - Stabiliser à température T (30 min)
-#    - Mesurer le biais b_g(T) en statique
-# 3. Ajuster un modèle polynomial
-
-# Exemple: modèle quadratique
-import numpy as np
-from scipy.optimize import curve_fit
-
-def bias_model(T, b0, b1, b2):
-    return b0 + b1 * T + b2 * T**2
-
-# Ajustement
-T_samples = [20, 30, 40, 50, 60]  # °C
-bias_samples = [...]  # Mesures correspondantes
-
-params, _ = curve_fit(bias_model, T_samples, bias_samples)
-b0, b1, b2 = params
-```
-
-**Correction en temps réel:**
-
-```python
-# Lire la température
-T_current = read_temperature_sensor()
-
-# Compenser le biais
-b_g_thermal = bias_model(T_current, b0, b1, b2)
-omega_compensated = omega_raw - b_g_thermal
-```
-
-### 3.2 Modèle linéaire simplifié
-
-Pour des variations modérées (±20°C):
-
-```
-b_g(T) = b_g(T_ref) + k_T · (T - T_ref)
-```
-
-où k_T ≈ 0.03°/s/°C pour le MPU6050.
-
----
-
 ## Validation de la calibration
 
-### 4.1 Test de précision de l'accéléromètre
+### 3.1 Test de précision de l'accéléromètre
 
 **Test de la magnitude:**
 
@@ -372,7 +319,7 @@ std_magnitude = np.std(magnitudes)
 assert std_magnitude < 0.05  # < 0.05 m/s²
 ```
 
-### 4.2 Test de stabilité du gyroscope
+### 3.2 Test de stabilité du gyroscope
 
 **Test de biais statique:**
 
@@ -397,7 +344,7 @@ final_drift = np.abs(angle_drift[-1])
 assert final_drift < 5.0  # < 5° de dérive en 1 min
 ```
 
-### 4.3 Test de fusion de capteurs
+### 3.3 Test de fusion de capteurs
 
 **Test d'orientation statique:**
 
@@ -432,7 +379,6 @@ assert abs(pitch) < 2.0 * np.pi/180  # < 2°
 {
   "calibration_date": "2024-01-15T10:30:00Z",
   "serial_number": "MPU6050-001",
-  "temperature_reference": 25.0,
   "accelerometer": {
     "bias": [0.05, -0.03, 0.02],
     "scale_matrix": [
@@ -448,12 +394,7 @@ assert abs(pitch) < 2.0 * np.pi/180  # < 2°
       [1.01, 0.00, 0.00],
       [0.00, 1.00, 0.00],
       [0.00, 0.00, 0.99]
-    ],
-    "thermal_coefficients": {
-      "b0": [0.15, -0.10, 0.05],
-      "b1": [0.03, 0.02, 0.03],
-      "b2": [0.0, 0.0, 0.0]
-    }
+    ]
   },
   "noise_parameters": {
     "accel_noise_density": 0.003924,

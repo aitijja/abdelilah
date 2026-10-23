@@ -38,11 +38,12 @@ def simulate_static_scenario():
     n_samples = int(duration * config.sample_rate)
     dt = 1.0 / config.sample_rate
 
-    # Direction de la gravité (capteur incliné de 30° en roll)
+    # Direction de la gravité (vers le bas) dans le repère capteur,
+    # capteur incliné de 30° en roll
     roll_angle = np.deg2rad(30)
-    gravity_direction = np.array([
-        np.sin(roll_angle),
+    gravity_direction = -np.array([
         0,
+        np.sin(roll_angle),
         np.cos(roll_angle)
     ])
 
@@ -54,8 +55,7 @@ def simulate_static_scenario():
     print("Simulation en cours...")
     accel_measurements, gyro_measurements = sensor.simulate_static_measurement(
         gravity_direction=gravity_direction,
-        duration=duration,
-        temperature=25.0
+        duration=duration
     )
 
     # Statistiques

@@ -200,7 +200,6 @@ def save_calibration_to_json(b_a, S_a, b_g, filename="calibration.json"):
     calibration_data = {
         "calibration_date": "2024-01-15T10:30:00Z",
         "serial_number": "MPU6050-EXAMPLE",
-        "temperature_reference": 25.0,
         "accelerometer": {
             "bias": b_a.tolist(),
             "scale_matrix": S_a.tolist(),
@@ -208,12 +207,7 @@ def save_calibration_to_json(b_a, S_a, b_g, filename="calibration.json"):
         },
         "gyroscope": {
             "bias": b_g.tolist(),
-            "scale_matrix": np.eye(3).tolist(),
-            "thermal_coefficients": {
-                "b0": b_g.tolist(),
-                "b1": [0.0, 0.0, 0.0],
-                "b2": [0.0, 0.0, 0.0]
-            }
+            "scale_matrix": np.eye(3).tolist()
         },
         "noise_parameters": {
             "accel_noise_density": 0.003924,

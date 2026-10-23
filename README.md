@@ -13,8 +13,7 @@ Ce projet fournit un modèle mathématique complet et rigoureux du capteur inert
   - Équations de mesure du gyroscope
   - Modélisation du biais (offset)
   - Modélisation du bruit
-  - Modélisation dynamique
-  - Compensation thermique
+  - Modélisation dynamique (trajectoires, filtre DLPF, échantillonnage, saturation)
 
 - **[SENSOR_FUSION.md](docs/SENSOR_FUSION.md)** - Algorithmes de fusion de capteurs
   - Filtre de Kalman étendu (EKF)
@@ -31,7 +30,7 @@ Ce projet fournit un modèle mathématique complet et rigoureux du capteur inert
 
 ### Code Source
 
-- **src/models/** - Implémentations Python des modèles mathématiques
+- **src/models/** - Implémentations Python des modèles mathématiques (mesure, trajectoires, simulation dynamique)
 - **src/fusion/** - Algorithmes de fusion de capteurs (EKF, complémentaire, Mahony, Madgwick)
 - **src/utils/** - Utilitaires et constantes
 - **matlab/** - `QuaternionEKF.m` (EKF, compatible MATLAB et GNU Octave) et `demo_ekf.m`
@@ -47,6 +46,7 @@ Ce projet fournit un modèle mathématique complet et rigoureux du capteur inert
 pip install -r requirements.txt
 python examples/basic_simulation.py      # Simulation + comparaison des 4 filtres
 python examples/calibration_example.py   # Calibration du gyroscope
+python examples/dynamic_simulation.py    # Capteur en mouvement : filtres et vibrations (DLPF)
 
 pip install pytest
 python -m pytest tests                   # Tests de convergence (+ parité MATLAB si Octave est installé)
@@ -82,10 +82,9 @@ g++ -std=c++11 -O2 -Iarduino/MPU6050_Fusion arduino/test/test_fusion_host.cpp -o
 - **Bruit**: 0.005 °/s/√Hz
 - **Dérive de biais**: ±20 °/s
 
-### Capteur de température
-- **Plage**: -40°C à +85°C
-- **Résolution**: 16 bits
-- **Sensibilité**: 340 LSB/°C
+### Filtre passe-bas et échantillonnage
+- **DLPF**: 7 réglages, de 260 Hz à 5 Hz de bande passante
+- **Cadence de sortie**: 1 kHz / (1 + SMPLRT_DIV) avec DLPF actif
 
 ## Applications
 
