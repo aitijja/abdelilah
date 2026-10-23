@@ -14,6 +14,7 @@ from src.models.mpu6050_model import MPU6050Model, MPU6050Config, SensorCalibrat
 from src.fusion.kalman_filter import QuaternionEKF
 from src.fusion.complementary_filter import ComplementaryFilter
 from src.fusion.mahony_filter import MahonyFilter
+from src.fusion.madgwick_filter import MadgwickFilter
 
 
 def simulate_static_scenario():
@@ -112,6 +113,7 @@ def compare_fusion_algorithms():
     ekf = QuaternionEKF(sample_rate=config.sample_rate)
     complementary = ComplementaryFilter(alpha=0.98, sample_rate=config.sample_rate)
     mahony = MahonyFilter(kp=2.0, ki=0.1, sample_rate=config.sample_rate)
+    madgwick = MadgwickFilter(beta=0.1, sample_rate=config.sample_rate)
 
     # Scénario: rotation de 45° en pitch
     duration = 5.0
@@ -126,7 +128,8 @@ def compare_fusion_algorithms():
     results = {
         'ekf': {'roll': [], 'pitch': [], 'yaw': []},
         'complementary': {'roll': [], 'pitch': [], 'yaw': []},
-        'mahony': {'roll': [], 'pitch': [], 'yaw': []}
+        'mahony': {'roll': [], 'pitch': [], 'yaw': []},
+        'madgwick': {'roll': [], 'pitch': [], 'yaw': []}
     }
 
     print("Simulation de rotation de 45° en pitch...")
@@ -158,6 +161,8 @@ def compare_fusion_algorithms():
 
         mahony.update(gyro_meas, accel_meas)
 
+        madgwick.update(gyro_meas, accel_meas)
+
         # Enregistrer les résultats
         roll_ekf, pitch_ekf, yaw_ekf = ekf.euler_angles
         results['ekf']['roll'].append(roll_ekf)
@@ -174,6 +179,11 @@ def compare_fusion_algorithms():
         results['mahony']['pitch'].append(pitch_mah)
         results['mahony']['yaw'].append(yaw_mah)
 
+        roll_mad, pitch_mad, yaw_mad = madgwick.euler_angles
+        results['madgwick']['roll'].append(roll_mad)
+        results['madgwick']['pitch'].append(pitch_mad)
+        results['madgwick']['yaw'].append(yaw_mad)
+
     # Visualisation
     time = np.arange(n_samples) * dt
 
@@ -184,6 +194,7 @@ def compare_fusion_algorithms():
     axes[0].plot(time, np.rad2deg(results['ekf']['pitch']), label='EKF', alpha=0.8)
     axes[0].plot(time, np.rad2deg(results['complementary']['pitch']), label='Complémentaire', alpha=0.8)
     axes[0].plot(time, np.rad2deg(results['mahony']['pitch']), label='Mahony', alpha=0.8)
+    axes[0].plot(time, np.rad2deg(results['madgwick']['pitch']), label='Madgwick', alpha=0.8)
     axes[0].set_xlabel('Temps [s]')
     axes[0].set_ylabel('Pitch [°]')
     axes[0].set_title('Comparaison des filtres - Angle de Pitch')
@@ -194,10 +205,12 @@ def compare_fusion_algorithms():
     error_ekf = np.rad2deg(np.array(results['ekf']['pitch']) - pitch_true)
     error_comp = np.rad2deg(np.array(results['complementary']['pitch']) - pitch_true)
     error_mah = np.rad2deg(np.array(results['mahony']['pitch']) - pitch_true)
+    error_mad = np.rad2deg(np.array(results['madgwick']['pitch']) - pitch_true)
 
     axes[1].plot(time, error_ekf, label='EKF', alpha=0.8)
     axes[1].plot(time, error_comp, label='Complémentaire', alpha=0.8)
     axes[1].plot(time, error_mah, label='Mahony', alpha=0.8)
+    axes[1].plot(time, error_mad, label='Madgwick', alpha=0.8)
     axes[1].set_xlabel('Temps [s]')
     axes[1].set_ylabel('Erreur [°]')
     axes[1].set_title('Erreur de Pitch')
@@ -208,6 +221,7 @@ def compare_fusion_algorithms():
     axes[2].plot(time, np.rad2deg(results['ekf']['roll']), label='EKF', alpha=0.8)
     axes[2].plot(time, np.rad2deg(results['complementary']['roll']), label='Complémentaire', alpha=0.8)
     axes[2].plot(time, np.rad2deg(results['mahony']['roll']), label='Mahony', alpha=0.8)
+    axes[2].plot(time, np.rad2deg(results['madgwick']['roll']), label='Madgwick', alpha=0.8)
     axes[2].set_xlabel('Temps [s]')
     axes[2].set_ylabel('Roll [°]')
     axes[2].set_title('Angle de Roll (doit rester ~0°)')
@@ -223,10 +237,12 @@ def compare_fusion_algorithms():
     rmse_ekf = np.sqrt(np.mean(error_ekf**2))
     rmse_comp = np.sqrt(np.mean(error_comp**2))
     rmse_mah = np.sqrt(np.mean(error_mah**2))
+    rmse_mad = np.sqrt(np.mean(error_mad**2))
 
     print(f"EKF:            {rmse_ekf:.4f}°")
     print(f"Complémentaire: {rmse_comp:.4f}°")
     print(f"Mahony:         {rmse_mah:.4f}°")
+    print(f"Madgwick:       {rmse_mad:.4f}°")
 
 
 if __name__ == "__main__":

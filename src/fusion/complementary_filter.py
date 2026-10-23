@@ -61,7 +61,7 @@ class ComplementaryFilter:
         q0, q1, q2, q3 = self.q[0], self.q[1], self.q[2], self.q[3]
 
         roll = np.arctan2(2*(q0*q1 + q2*q3), 1 - 2*(q1**2 + q2**2))
-        pitch = np.arcsin(2*(q0*q2 - q3*q1))
+        pitch = np.arcsin(np.clip(2*(q0*q2 - q3*q1), -1.0, 1.0))
         yaw = np.arctan2(2*(q0*q3 + q1*q2), 1 - 2*(q2**2 + q3**2))
 
         return roll, pitch, yaw
@@ -87,11 +87,16 @@ class ComplementaryFilter:
         use_accel = (self.accel_threshold_low <= accel_norm <= self.accel_threshold_high)
 
         if use_accel:
-            # 3. Correction avec accéléromètre
-            q_accel = self._quaternion_from_accel(accel_measurement)
+            # 3. Correction d'inclinaison avec l'accéléromètre
+            dq = self._tilt_correction(q_pred, accel_measurement)
 
-            # 4. Fusion complémentaire (SLERP)
-            self.q = self._slerp(q_pred, q_accel, 1 - self.alpha)
+            # 4. Fusion complémentaire : on applique une fraction (1-α)
+            #    de la correction (SLERP depuis l'identité), dans le repère capteur.
+            #    Le lacet (yaw) n'est pas observable par l'accéléromètre et
+            #    reste donc intégralement issu du gyroscope.
+            identity = np.array([1.0, 0.0, 0.0, 0.0])
+            dq_partial = self._slerp(identity, dq, 1 - self.alpha)
+            self.q = self._quat_multiply(q_pred, dq_partial)
         else:
             # Utiliser uniquement le gyroscope
             self.q = q_pred
@@ -126,53 +131,80 @@ class ComplementaryFilter:
 
         return q_pred / np.linalg.norm(q_pred)
 
-    def _quaternion_from_accel(self, accel: np.ndarray) -> np.ndarray:
+    def _tilt_correction(self, q: np.ndarray, accel: np.ndarray) -> np.ndarray:
         """
-        Calcule un quaternion d'orientation depuis l'accéléromètre
+        Calcule la rotation (repère capteur) qui aligne la gravité prédite
+        sur la gravité mesurée par l'accéléromètre
 
-        Suppose que l'accéléromètre mesure uniquement la gravité (statique)
+        Avec h(q) = R(q)ᵀ·e_z la gravité prédite et ã la mesure normalisée,
+        on cherche δq tel que R(q ⊗ δq)ᵀ·e_z = ã, soit R(δq)·ã = h(q) :
+        δq est la rotation de plus court chemin de ã vers h(q).
+        Son axe est orthogonal à la gravité : seule l'inclinaison est corrigée.
 
         Args:
-            accel: Mesure de l'accéléromètre normalisée
+            q: Quaternion prédit
+            accel: Mesure de l'accéléromètre [m/s²]
 
         Returns:
-            Quaternion estimé
+            Quaternion de correction δq
         """
-        # Normaliser l'accélération
         a_norm = accel / np.linalg.norm(accel)
 
-        # Vecteur gravité dans le repère monde
-        g_world = np.array([0, 0, 1])
-
-        # Calculer l'axe de rotation (produit vectoriel)
-        v = np.cross(g_world, a_norm)
-        v_norm = np.linalg.norm(v)
-
-        if v_norm < 1e-6:
-            # Vecteurs alignés ou anti-alignés
-            if np.dot(g_world, a_norm) > 0:
-                return np.array([1.0, 0.0, 0.0, 0.0])  # Pas de rotation
-            else:
-                return np.array([0.0, 1.0, 0.0, 0.0])  # Rotation de 180° autour de x
-
-        # Normaliser l'axe
-        axis = v / v_norm
-
-        # Angle de rotation
-        angle = np.arccos(np.clip(np.dot(g_world, a_norm), -1.0, 1.0))
-
-        # Quaternion depuis axe-angle
-        half_angle = angle / 2.0
-        sin_half = np.sin(half_angle)
-
-        q = np.array([
-            np.cos(half_angle),
-            axis[0] * sin_half,
-            axis[1] * sin_half,
-            axis[2] * sin_half
+        q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
+        g_pred = np.array([
+            2 * (q1*q3 - q0*q2),
+            2 * (q0*q1 + q2*q3),
+            q0**2 - q1**2 - q2**2 + q3**2
         ])
 
-        return q
+        return self._quaternion_between(a_norm, g_pred)
+
+    @staticmethod
+    def _quaternion_between(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        """
+        Quaternion de plus court chemin faisant tourner le vecteur unitaire u vers v
+
+        Args:
+            u: Vecteur unitaire de départ
+            v: Vecteur unitaire d'arrivée
+
+        Returns:
+            Quaternion [q₀, q₁, q₂, q₃]
+        """
+        dot = np.clip(np.dot(u, v), -1.0, 1.0)
+        axis = np.cross(u, v)
+        axis_norm = np.linalg.norm(axis)
+
+        if axis_norm < 1e-9:
+            if dot > 0:
+                return np.array([1.0, 0.0, 0.0, 0.0])  # Pas de rotation
+            # Anti-alignés : 180° autour d'un axe quelconque orthogonal à u
+            ortho = np.cross(u, [1.0, 0.0, 0.0])
+            if np.linalg.norm(ortho) < 1e-6:
+                ortho = np.cross(u, [0.0, 1.0, 0.0])
+            ortho = ortho / np.linalg.norm(ortho)
+            return np.array([0.0, ortho[0], ortho[1], ortho[2]])
+
+        half_angle = np.arccos(dot) / 2.0
+        axis = axis / axis_norm
+        return np.concatenate(([np.cos(half_angle)], np.sin(half_angle) * axis))
+
+    @staticmethod
+    def _quat_multiply(p: np.ndarray, q: np.ndarray) -> np.ndarray:
+        """
+        Produit de Hamilton p ⊗ q
+
+        Returns:
+            Quaternion produit
+        """
+        p0, p1, p2, p3 = p
+        q0, q1, q2, q3 = q
+        return np.array([
+            p0*q0 - p1*q1 - p2*q2 - p3*q3,
+            p0*q1 + p1*q0 + p2*q3 - p3*q2,
+            p0*q2 - p1*q3 + p2*q0 + p3*q1,
+            p0*q3 + p1*q2 - p2*q1 + p3*q0
+        ])
 
     def _slerp(self, q1: np.ndarray, q2: np.ndarray, t: float) -> np.ndarray:
         """

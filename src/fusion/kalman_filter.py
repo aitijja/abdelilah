@@ -90,7 +90,7 @@ class QuaternionEKF:
         roll = np.arctan2(2 * (q0*q1 + q2*q3), 1 - 2 * (q1**2 + q2**2))
 
         # Pitch (θ)
-        pitch = np.arcsin(2 * (q0*q2 - q3*q1))
+        pitch = np.arcsin(np.clip(2 * (q0*q2 - q3*q1), -1.0, 1.0))
 
         # Yaw (ψ)
         yaw = np.arctan2(2 * (q0*q3 + q1*q2), 1 - 2 * (q2**2 + q3**2))

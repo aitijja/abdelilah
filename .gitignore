@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Sorties des exemples
+*.png
+calibration.json
+
+# Binaires de test
+test_fusion_host

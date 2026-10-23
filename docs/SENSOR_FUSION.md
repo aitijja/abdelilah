@@ -313,13 +313,22 @@ q_pred = q · exp((Δt/2) · ω)
 
 où exp est l'exponentielle quaternionique.
 
-**Correction avec accéléromètre:**
+**Correction avec accéléromètre (inclinaison uniquement):**
+
+Avec ĥ = R(q_pred)ᵀ · e_z la gravité prédite et ã_m = a_m / ||a_m|| la mesure normalisée,
+on cherche la rotation δq (repère capteur) telle que R(q_pred ⊗ δq)ᵀ · e_z = ã_m,
+c'est-à-dire la rotation de plus court chemin de ã_m vers ĥ :
 
 ```
-v_error = (R(q_pred)ᵀ · g) × a_m
-q_correction = exp((1-α)/2 · v_error)
-q = q_correction · q_pred
+δq = quat_between(ã_m, ĥ)        axe ∝ ã_m × ĥ,  angle = arccos(ã_m · ĥ)
+δq_α = SLERP(1, δq, 1 - α)
+q = q_pred ⊗ δq_α
 ```
+
+L'axe de δq est orthogonal à la gravité : seule l'inclinaison (roll/pitch) est
+corrigée et le lacet reste celui intégré par le gyroscope. Un SLERP direct vers
+un quaternion « absolu » calculé depuis l'accéléromètre ramènerait au contraire
+le lacet vers une valeur arbitraire.
 
 ---
 
@@ -443,13 +452,18 @@ q[k+1] ← q[k+1] / ||q[k+1]||
 
 ### 4.5 Ajustement adaptatif du gain β
 
-Pour réduire l'influence de l'accéléromètre pendant les mouvements:
+Pour réduire l'influence de l'accéléromètre pendant les mouvements, β est pondéré
+par l'écart de ||a_m|| à g, normalisé par le seuil de détection de mouvement (ici 20 %) :
 
 ```
-β_adaptive = β₀ · (1 - ||a_m|| / g)
+β_adaptive = β₀ · max(0, 1 - |‖a_m‖/g - 1| / 0.2)
 ```
 
-où β₀ est le gain nominal.
+β_adaptive vaut β₀ au repos et s'annule quand ||a_m|| atteint 0.8 g ou 1.2 g
+(option `adaptive_gain=True` de `MadgwickFilter`).
+
+**Choix de β:** Madgwick propose β = √(3/4) · ω̃_β où ω̃_β est l'erreur moyenne
+du gyroscope (biais résiduel). Avec un biais résiduel de ~5 °/s, β ≈ 0.08 rad/s.
 
 ### 4.6 Version avec magnétomètre
 
@@ -520,6 +534,22 @@ où **b** est le champ magnétique de référence et **m̃** la mesure normalis�
 - Bonne performance requise
 - Pas besoin de covariance
 - Code ouvert populaire souhaité
+
+### 5.5 Implémentations du dépôt
+
+| Algorithme | Python | MATLAB / Octave | Arduino (C++) |
+|------------|--------|-----------------|---------------|
+| EKF | `src/fusion/kalman_filter.py` | `matlab/QuaternionEKF.m` | — |
+| Complémentaire | `src/fusion/complementary_filter.py` | — | — |
+| Mahony | `src/fusion/mahony_filter.py` | — | `arduino/MPU6050_Fusion/Fusion.h` |
+| Madgwick | `src/fusion/madgwick_filter.py` | — | `arduino/MPU6050_Fusion/Fusion.h` |
+
+`matlab/QuaternionEKF.m` reproduit la version Python à 1e-9 près
+(`tests/test_matlab_parity.py`). Le sketch Arduino tourne à 250 Hz sur un
+ATmega328P (≈13 Ko de flash) et lit le MPU6050 directement via `Wire`.
+
+Résultats en simulation (`examples/basic_simulation.py`, rampe de 45° en pitch
+sur 5 s à 100 Hz) : RMSE pitch de 0.03 à 0.13° pour les quatre filtres.
 
 ---
 

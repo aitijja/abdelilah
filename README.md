@@ -32,12 +32,41 @@ Ce projet fournit un modèle mathématique complet et rigoureux du capteur inert
 ### Code Source
 
 - **src/models/** - Implémentations Python des modèles mathématiques
-- **src/fusion/** - Algorithmes de fusion de capteurs
+- **src/fusion/** - Algorithmes de fusion de capteurs (EKF, complémentaire, Mahony, Madgwick)
 - **src/utils/** - Utilitaires et constantes
+- **matlab/** - `QuaternionEKF.m` (EKF, compatible MATLAB et GNU Octave) et `demo_ekf.m`
+- **arduino/MPU6050_Fusion/** - Sketch Arduino temps réel (Mahony ou Madgwick, 250 Hz, sans bibliothèque externe)
 
 ### Exemples
 
 - **examples/** - Exemples d'utilisation pratique
+
+## Démarrage rapide
+
+```bash
+pip install -r requirements.txt
+python examples/basic_simulation.py      # Simulation + comparaison des 4 filtres
+python examples/calibration_example.py   # Calibration du gyroscope
+
+pip install pytest
+python -m pytest tests                   # Tests de convergence (+ parité MATLAB si Octave est installé)
+```
+
+MATLAB / Octave :
+
+```matlab
+cd matlab
+demo_ekf
+```
+
+Arduino : ouvrir `arduino/MPU6050_Fusion/MPU6050_Fusion.ino` dans l'IDE Arduino
+(câblage SDA→A4, SCL→A5 sur Uno/Nano), téléverser, puis ouvrir le traceur série
+à 115200 bauds. Laisser le capteur immobile ~2 s au démarrage (calibration du gyroscope).
+`USE_MADGWICK` choisit le filtre. Test hôte des filtres C++ :
+
+```bash
+g++ -std=c++11 -O2 -Iarduino/MPU6050_Fusion arduino/test/test_fusion_host.cpp -o test_fusion_host && ./test_fusion_host
+```
 
 ## Caractéristiques du MPU6050
 
